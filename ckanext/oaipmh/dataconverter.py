@@ -18,7 +18,12 @@ from ckan.model.authz import setup_default_user_roles
 from ckan.model.license import LicenseRegister, LicenseOtherPublicDomain
 from ckan.model.license import LicenseOtherClosed, LicenseNotSpecified
 from ckan.controllers.storage import BUCKET, get_ofs
-from ckanext.kata.utils import label_list_yso
+#from ckanext.kata.utils import label_list_yso
+
+# used in label_list_yso()
+import urllib2
+import socket
+from lxml import etree
 
 # from ckan.lib.munge import munge_tag
 # from lxml import etree
@@ -202,6 +207,50 @@ def _handle_format(nodes, namespaces):
 
     return d
 
+# from https://github.com/kata-csc/ckanext-kata/blob/9a48369acf64f4eac0921d163787d1cfd22ababb/ckanext/kata/utils.py
+def label_list_yso(tag_url):
+    """
+    Takes tag keyword URL and fetches the labels that link to it.
+    """
+
+    _tagspaces = {
+    'rdf' : 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+    'yso-meta' : 'http://www.yso.fi/onto/yso-meta/2007-03-02/',
+    'rdfs' : "http://www.w3.org/2000/01/rdf-schema#",
+    'ysa' : "http://www.yso.fi/onto/ysa/",
+    'skos' : "http://www.w3.org/2004/02/skos/core#",
+    'om' : "http://www.yso.fi/onto/yso-peilaus/2007-03-02/",
+    'dc' : "http://purl.org/dc/elements/1.1/",
+    'allars' : "http://www.yso.fi/onto/allars/",
+    'daml' : "http://www.daml.org/2001/03/daml+oil#",
+    'yso-kehitys' : "http://www.yso.fi/onto/yso-kehitys/",
+    'owl' : "http://www.w3.org/2002/07/owl#",
+    'xsd' : "http://www.w3.org/2001/XMLSchema#",
+    'yso' : "http://www.yso.fi/onto/yso/",
+    }
+
+    labels = []
+    if not tag_url.endswith("?rdf=xml"):
+        tag_url += "?rdf=xml" # Small necessary bit.
+    request = urllib2.Request(tag_url, headers={"Accept":"application/rdf+xml"})
+    try:
+        contents = urllib2.urlopen(request).read()
+    except (socket.error, urllib2.HTTPError, urllib2.URLError,):
+        log.debug("Failed to read tag XML.")
+        return []
+    try:
+        xml = etree.XML(contents)
+    except etree.XMLSyntaxError:
+        log.debug("Tag XMl syntax error.")
+        return []
+    for descr in xml.xpath('/rdf:RDF/rdf:Description', namespaces=_tagspaces):
+        for tag in ('yso-meta:prefLabel', 'rdfs:label', 'yso-meta:altLabel',):
+            nodes = descr.xpath('./%s' % tag, namespaces=_tagspaces)
+            for node in nodes:
+                t = node.text.strip() if node.text else ''
+                if t:
+                    labels.append(t)
+    return labels
 
 def _oai_dc2ckan(data, namespaces, group, harvest_object):
     model.repo.new_revision()
