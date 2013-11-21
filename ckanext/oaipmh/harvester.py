@@ -26,6 +26,7 @@ from oaipmh.metadata import MetadataReader, MetadataRegistry
 from oaipmh.error import NoSetHierarchyError, NoRecordsMatchError
 from oaipmh.error import XMLSyntaxError
 from oaipmh import common
+from oaipmh.error import DatestampError
 
 from ckanext.harvest.harvesters.retry import HarvesterRetry
 from dataconverter import oai_dc2ckan
@@ -181,6 +182,7 @@ class OAIPMHHarvester(HarvesterBase):
         client = oaipmh.client.Client(url, registry)
         try:
             identifier = client.identify()
+            client.updateGranularity() #quickfix: to set corrent datetime granularity, updateGranularity has to be called 
         except (urllib2.URLError, urllib2.HTTPError) as err:
             log.debug("Error occurred: {0}".format(err))
             if harvest_job:
@@ -285,7 +287,10 @@ class OAIPMHHarvester(HarvesterBase):
         return from_until
 
     def _gather_stage(self, harvest_job):
-        from_until = self._get_time_limits(harvest_job)
+        if not ('set_time_limits' in self.config and not self.config['set_time_limits']):
+            from_until = self._get_time_limits(harvest_job) # quickfix?
+        else: from_until = {}
+
         client, identifier = self._get_client_identifier(harvest_job.source.url, harvest_job)
         if not identifier:
             self._raise_gather_failure('Could not get source identifier.')
@@ -296,8 +301,13 @@ class OAIPMHHarvester(HarvesterBase):
         rec_idents = []
         try:
             domain = identifier.repositoryName()
-            args = {self.metadata_prefix_key: self.metadata_prefix_value}
+            args = {self.metadata_prefix_key: self.metadata_prefix_value}  
             args.update(from_until)
+            if 'set' in self.config:
+                 args.update({'set':self.config['set']})
+            log.debug('args size: %d' % len(args))
+            log.debug('args: %r' %args)
+            log.debug('granularity: %s' % identifier.granularity())
             for ident in client.listIdentifiers(**args):
                 if ident.identifier() in ident2rec:
                     continue  # On our retry list already, do not fetch twice.
@@ -305,6 +315,8 @@ class OAIPMHHarvester(HarvesterBase):
         except NoRecordsMatchError:
             log.debug('No records matched: %s' % domain)
             pass  # Ok. Just nothing to get.
+        except DatestampError as e:
+            log.debug('DatestampError: %r' % e.details())
         except Exception as e:
             # Once we know of something specific, handle it separately.
             log.debug(traceback.format_exc(e))
@@ -451,6 +463,7 @@ class OAIPMHHarvester(HarvesterBase):
         registry = MetadataRegistry()
         registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader)
         client = oaipmh.client.Client(harvest_object.job.source.url, registry)
+        client.updateGranularity() #quickfix for granularity
         domain = ident['domain']
         group = Group.get(domain)  # Checked in gather_stage so exists.
 
@@ -531,7 +544,7 @@ class OAIPMHHarvester(HarvesterBase):
             label = '%s/%s.xml' % (nowstr, data['identifier'])
             f = urllib2.urlopen(data['package_url'])
             x = f.read()
-            fileurl = pylons.configuration.config['ckan.site_url'] + h.url_for('storage_file', label=label)
+            fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) #quick fix for ckan in non-root url 
             data['package_xml_save'] = {
                 'label': label,
                 'xml': x
@@ -659,7 +672,7 @@ class OAIPMHHarvester(HarvesterBase):
         # Data to use when saving the XML record.
         nowstr = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
         label = '%s/%s.xml' % (nowstr, data['identifier'])
-        fileurl = pylons.configuration.config['ckan.site_url'] + h.url_for('storage_file', label=label)
+        fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) # quickfix for ckan in non-root url
         data['package_xml_save'] = {
             'label': label,
             'xml': xml
