@@ -272,6 +272,7 @@ class OAIPMHHarvester(HarvesterBase):
         until = date_from_config('ckanext.harvest.test.until')
         previous_job = Session.query(HarvestJob).filter(
             HarvestJob.source == harvest_job.source).filter(
+                HarvestJob.config == harvest_job.config).filter(
                 HarvestJob.gather_finished != None).filter(
                     HarvestJob.id != harvest_job.id).order_by(HarvestJob.gather_finished.desc()).limit(1).first()
 
