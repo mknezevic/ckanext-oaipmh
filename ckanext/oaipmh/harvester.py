@@ -494,6 +494,7 @@ class OAIPMHHarvester(HarvesterBase):
         return False
 
     def _package_name_from_identifier(self, identifier):
+        #quickfix for '/' char in identifier
         esc_identifier = identifier.replace('/','-')
         return urllib.quote_plus(esc_identifier)
 
