@@ -272,7 +272,7 @@ class OAIPMHHarvester(HarvesterBase):
         until = date_from_config('ckanext.harvest.test.until')
         previous_job = Session.query(HarvestJob).filter(
             HarvestJob.source == harvest_job.source).filter(
-                HarvestJob.config == harvest_job.config).filter(
+            HarvestJob.config == harvest_job.config).filter(
                 HarvestJob.gather_finished != None).filter(
                     HarvestJob.id != harvest_job.id).order_by(HarvestJob.gather_finished.desc()).limit(1).first()
 
@@ -288,42 +288,52 @@ class OAIPMHHarvester(HarvesterBase):
         return from_until
 
     def _gather_stage(self, harvest_job):
-        if not ('set_time_limits' in self.config and not self.config['set_time_limits']):
-            from_until = self._get_time_limits(harvest_job) # quickfix?
-        else: from_until = {}
-
         client, identifier = self._get_client_identifier(harvest_job.source.url, harvest_job)
         if not identifier:
             self._raise_gather_failure('Could not get source identifier.')
-        #query = self.config['query'] if 'query' in self.config else ''
-
+        
+        domain = identifier.repositoryName()
         # Get things to retry.
         ident2rec, ident2set = self._scan_retries(harvest_job)
         rec_idents = []
-        try:
-            domain = identifier.repositoryName()
-            args = {self.metadata_prefix_key: self.metadata_prefix_value}  
-            args.update(from_until)
-            if 'set' in self.config:
-                 args.update({'set':self.config['set']})
-            log.debug('args size: %d' % len(args))
-            log.debug('args: %r' %args)
-            log.debug('granularity: %s' % identifier.granularity())
-            for ident in client.listIdentifiers(**args):
-                if ident.identifier() in ident2rec:
-                    continue  # On our retry list already, do not fetch twice.
-                rec_idents.append(ident.identifier())
-        except NoRecordsMatchError:
-            log.debug('No records matched: %s' % domain)
-            pass  # Ok. Just nothing to get.
-        except DatestampError as e:
-            log.debug('DatestampError: %r' % e.details())
-        except Exception as e:
-            # Once we know of something specific, handle it separately.
-            log.debug(traceback.format_exc(e))
-            self._save_gather_error('Could not fetch identifier list.', harvest_job)
-            self._raise_gather_failure('Could not fetch an identifier list.')
-
+        
+        # todo: handle invalid sets in config (sets not in client.ListSets)
+        
+        #domain = identifier.repositoryName()
+        args = {self.metadata_prefix_key: self.metadata_prefix_value}
+        from_until = self._get_time_limits(harvest_job)
+        args.update(from_until)
+        if('set' in self.config):
+            for set_ in self.config['set']:
+                args['set']=set_
+                try:
+                    for ident in client.listIdentifiers(**args):
+                        if ident.identifier() in ident2rec and ident.identifier() not in rec_idents: # cause records can belong to more than just one set
+                            continue # On our retry list already, do not fetch twice.
+                        rec_idents.append(ident.identifier())
+                except NoRecordsMatchError:
+                    log.debug('No records matched: %s for set: %s' % (domain, set_))
+                    pass # Ok. Just nothing to get.
+                except Exception as e:
+                    # Once we know of something specific, handle it separately.
+                    log.debug(traceback.format_exc(e))
+                    self._save_gather_error('Could not fetch identifier list.', harvest_job)
+                    self._raise_gather_failure('Could not fetch an identifier list.')
+        else:
+            try:
+                for ident in client.listIdentifiers(**args):
+                    if ident.identifier() in ident2rec and ident.identifier() not in rec_idents: # cause records can belong to more than just one set
+                        continue # On our retry list already, do not fetch twice.
+                    rec_idents.append(ident.identifier())
+            except NoRecordsMatchError:
+                log.debug('No records matched: %s' % domain)
+                pass # Ok. Just nothing to get.
+            except Exception as e:
+                # Once we know of something specific, handle it separately.
+                log.debug(traceback.format_exc(e))
+                self._save_gather_error('Could not fetch identifier list.', harvest_job)
+                self._raise_gather_failure('Could not fetch an identifier list.')
+        
         # Gathering the set list here. Member identifiers in fetch.
         group = self._get_group(domain)
         sets = []
@@ -335,7 +345,7 @@ class OAIPMHHarvester(HarvesterBase):
                 # Is set due for retry and it is not missing member insertion?
                 # Set either failed in retry of misses packages but not both.
                 # Set with failed insertions may have new members.
-                if name in ident2set and name not in insertion_retries:
+                if name in ident2set and name not in insertion_retries or identifier not in self.config['set']:
                     continue
                 sets.append((identifier, name))
         except NoSetHierarchyError:
@@ -484,7 +494,8 @@ class OAIPMHHarvester(HarvesterBase):
         return False
 
     def _package_name_from_identifier(self, identifier):
-        return urllib.quote_plus(urllib.quote_plus(identifier))
+        esc_identifier = identifier.replace('/','-')
+        return urllib.quote_plus(identifier)
 
     def _fetch_import_record(self, harvest_object, master_data, client, group):
         # The fetch part.
@@ -542,7 +553,9 @@ class OAIPMHHarvester(HarvesterBase):
 
         try:
             nowstr = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
-            label = '%s/%s.xml' % (nowstr, data['identifier'])
+            #fix for identifiers containing '/' char
+            esc_identifier = data['identifier'].replace('/','-');
+            label = '%s/%s.xml' % (nowstr, esc_identifier)
             f = urllib2.urlopen(data['package_url'])
             x = f.read()
             fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) #quick fix for ckan in non-root url 
@@ -672,7 +685,9 @@ class OAIPMHHarvester(HarvesterBase):
 
         # Data to use when saving the XML record.
         nowstr = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
-        label = '%s/%s.xml' % (nowstr, data['identifier'])
+        # fix for identifiers containing '/' char
+        esc_identifier = data['identifier'].replace('/','-')
+        label = '%s/%s.xml' % (nowstr, esc_identifier)
         fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) # quickfix for ckan in non-root url
         data['package_xml_save'] = {
             'label': label,
