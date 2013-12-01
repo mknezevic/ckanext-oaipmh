@@ -345,7 +345,7 @@ class OAIPMHHarvester(HarvesterBase):
                 # Is set due for retry and it is not missing member insertion?
                 # Set either failed in retry of misses packages but not both.
                 # Set with failed insertions may have new members.
-                if name in ident2set and name not in insertion_retries or identifier not in self.config['set']:
+                if name in ident2set and name not in insertion_retries or ('set' in self.config and identifier not in self.config['set']):
                     continue
                 sets.append((identifier, name))
         except NoSetHierarchyError:
