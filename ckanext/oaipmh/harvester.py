@@ -495,7 +495,7 @@ class OAIPMHHarvester(HarvesterBase):
 
     def _package_name_from_identifier(self, identifier):
         esc_identifier = identifier.replace('/','-')
-        return urllib.quote_plus(identifier)
+        return urllib.quote_plus(esc_identifier)
 
     def _fetch_import_record(self, harvest_object, master_data, client, group):
         # The fetch part.
