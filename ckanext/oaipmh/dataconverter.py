@@ -264,7 +264,8 @@ def _oai_dc2ckan(data, namespaces, group, harvest_object):
     name = data['package_name']
     pkg = Package.get(name)
     if not pkg:
-        pkg = Package(name=name, title=title, id=identifier)
+        esc_identifier = identifier.replace('/','-')
+        pkg = Package(name=name, title=title, id=esc_identifier)
         pkg.save()
         setup_default_user_roles(pkg)
     else:
