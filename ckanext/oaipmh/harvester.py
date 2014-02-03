@@ -11,34 +11,25 @@ import sys
 from lxml import etree
 import httplib
 import dateutil.parser
-
 from ckan.model import Session, Package, Group
 from ckan import model
-
 from ckanext.harvest.harvesters.base import HarvesterBase
 from ckanext.harvest.model import HarvestObject, HarvestJob
 from ckan.model.authz import setup_default_user_roles
 from ckan.lib import helpers as h
 import pylons.configuration
-
 import oaipmh.client
 from oaipmh.metadata import MetadataReader, MetadataRegistry
 from oaipmh.error import NoSetHierarchyError, NoRecordsMatchError
 from oaipmh.error import XMLSyntaxError
 from oaipmh import common
 from oaipmh.error import DatestampError
-
 from ckanext.harvest.harvesters.retry import HarvesterRetry
 from dataconverter import oai_dc2ckan
-
 log = logging.getLogger(__name__)
-
 import socket
 socket.setdefaulttimeout(30)
-
 import traceback
-
-
 # TODO! This is the worlds most useless class!! REWRITE OR REMOVE IT!!!
 class GatherFailure(Exception):
     def __init__(self, message='', ids=[]):
@@ -48,8 +39,6 @@ class GatherFailure(Exception):
         '''
         self.message = message
         self.harvest_obj_ids = ids
-
-
 class KataMetadataReader(MetadataReader):
     def __call__(self, element):
         map_ = {}
@@ -80,8 +69,6 @@ class KataMetadataReader(MetadataReader):
                 raise TypeError("Unknown field type: %s" % field_type)
             map_[field_name] = value
         return common.Metadata(map_)
-
-
 # Below namespaces needs to have all namespaces in docs or some things will not
 # be found at all.
 kata_oai_dc_reader = KataMetadataReader(
@@ -107,10 +94,8 @@ kata_oai_dc_reader = KataMetadataReader(
         'coverage': ('textList', 'oai_dc:dc/dc:coverage/text()'),
         # 'rights': ('textList', 'oai_dc:dc/dc:rights/text()'),
         'rightsNode': ('node', 'oai_dc:dc/dc:rights'),
-
         # DC
         'hasFormatNode': ('node', 'oai_dc:dc/dc:hasFormat'),
-
         # DC TERMS
         'modified': ('textList', 'oai_dc:dc/dct:modified/text()'),
     },
@@ -124,18 +109,13 @@ kata_oai_dc_reader = KataMetadataReader(
         'wn': "http://xmlns.com/wordnet/1.6/"
     }
 )
-
-
 class OAIPMHHarvester(HarvesterBase):
     '''
     OAI-PMH Harvester for ckanext-harvester.
     '''
-
     config = None
-
     metadata_prefix_key = 'metadataPrefix'
     metadata_prefix_value = 'oai_dc'
-
     def _set_config(self, config_str):
         '''Set the configuration string.
         '''
@@ -143,7 +123,6 @@ class OAIPMHHarvester(HarvesterBase):
             self.config = json.loads(config_str)
         else:
             self.config = {}
-
     def info(self):
         '''
         Return information about this harvester.
@@ -151,34 +130,37 @@ class OAIPMHHarvester(HarvesterBase):
         return {'name': 'OAI-PMH',
                 'title': 'OAI-PMH',
                 'description': 'A server which has a OAI-PMH interface available.'}
-
     def _str_from_datetime(self, dt):
         return dt.strftime('%Y-%m-%dT%H:%M:%S')
-
     def _add_retry(self, harvest_object):
         HarvesterRetry.mark_for_retry(harvest_object)
-
     def _scan_retries(self, harvest_job):
         self._retry = HarvesterRetry()
         ident2obj = {}
         ident2set = {}
         for harvest_object in self._retry.find_all_retries(harvest_job):
-            data = json.loads(harvest_object.content)
-            if data['fetch_type'] == 'record':
-                ident2obj[data['record']] = harvest_object
-            elif data['fetch_type'] == 'set':
-                ident2set[data['set_name']] = harvest_object
+            if harvest_object.content:
+                data = json.loads(harvest_object.content)
+                if data['fetch_type'] == 'record':
+                    ident2obj[data['record']] = harvest_object
+                elif data['fetch_type'] == 'set':
+                    ident2set[data['set_name']] = harvest_object
             else:
                 # This should not happen...
                 log.debug('Unknown retry fetch type: %s' % data['fetch_type'])
         return ident2obj, ident2set
-
     def _clear_retries(self):
         self._retry.clear_retry_marks()
-
     def _get_client_identifier(self, url, harvest_job=None):
         registry = MetadataRegistry()
-        registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader)
+
+        if 'metadata_formats' in self.config:
+            for mdp in self.config['metadata_formats']:
+                registry.registerReader(mdp, kata_oai_dc_reader)
+            if self.metadata_prefix_value not in self.config['metadata_formats']:
+                registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader)
+        else: registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader)
+        
         client = oaipmh.client.Client(url, registry)
         try:
             identifier = client.identify()
@@ -200,9 +182,7 @@ class OAIPMHHarvester(HarvesterBase):
             # Guard against miscellaneous stuff. Probably plain bugs.
             log.debug(traceback.format_exc(e))
             return client, None
-
         return client, identifier
-
     def _get_group(self, domain, in_revision=True):
         group = Group.by_name(domain)
         if not group:
@@ -213,13 +193,10 @@ class OAIPMHHarvester(HarvesterBase):
             group.save()
             if not in_revision:
                 model.repo.commit()
-
         return group
-
     def _raise_gather_failure(self, strerror, retry_list=None):
         # Use [] to indicate retries should be done. None to do nothing.
         raise GatherFailure(strerror, retry_list)
-
     def _make_retry_lists(self, harvest_job, ident2rec, ident2set, from_until):
         recs = []
         for ident, harv in ident2rec.items():
@@ -233,7 +210,6 @@ class OAIPMHHarvester(HarvesterBase):
             log.debug('Retrying record: %s' % harv.id)
         sets = []
         insertion_retries = set()
-
         def update_until(info, from_until):
             if 'until' not in info:
                 return  # Wanted up to current time earlier.
@@ -243,7 +219,6 @@ class OAIPMHHarvester(HarvesterBase):
             fu = self._str_from_datetime(from_until['until'])
             if info['until'] < fu:  # Keep latest date from the two alternatives.
                 info['until'] = fu
-
         for name, obj in ident2set.items():
             info = json.loads(obj.content)
             obj.content = None
@@ -258,16 +233,13 @@ class OAIPMHHarvester(HarvesterBase):
                 log.debug('Retrying set insertions: %s' % info['set_name'])
             else:
                 log.debug('Retrying set: %s' % info['set_name'])
-
         return recs, sets, insertion_retries
-
     def _get_time_limits(self, harvest_job):
         def date_from_config(key):
             if key in pylons.configuration.config:
                 return dateutil.parser.parse(pylons.configuration.config[key])
             else:
                 return None
-
         from_ = date_from_config('ckanext.harvest.test.from')
         until = date_from_config('ckanext.harvest.test.until')
         previous_job = Session.query(HarvestJob).filter(
@@ -275,7 +247,6 @@ class OAIPMHHarvester(HarvesterBase):
             HarvestJob.config == harvest_job.config).filter(
                 HarvestJob.gather_finished != None).filter(
                     HarvestJob.id != harvest_job.id).order_by(HarvestJob.gather_finished.desc()).limit(1).first()
-
         # Settings for debugging override old existing value.
         if previous_job and not from_ and not until:
             from_ = previous_job.gather_started
@@ -284,9 +255,7 @@ class OAIPMHHarvester(HarvesterBase):
             from_until['from_'] = from_
         if until:
             from_until['until'] = until
-
         return from_until
-
     def _gather_stage(self, harvest_job):
         client, identifier = self._get_client_identifier(harvest_job.source.url, harvest_job)
         if not identifier:
@@ -355,7 +324,6 @@ class OAIPMHHarvester(HarvesterBase):
             self._save_gather_error('Could not fetch a set list.', harvest_job)
             # We got something so perhaps records can gen gotten, hence [].
             self._raise_gather_failure('Could not fetch set list.', [])
-
         # Since network errors can't occur anymore, it's ok to create the
         # harvest objects to return to caller since we are not missing anything
         # crucial.
@@ -370,7 +338,6 @@ class OAIPMHHarvester(HarvesterBase):
             harvest_obj.save()
             harvest_objs.append(harvest_obj.id)
         log.info('Gathered %i records from %s.' % (len(harvest_objs), domain))
-
         # Add sets to retry first.
         harvest_objs.extend(set_objs)
         for set_id, set_name in sets:
@@ -390,9 +357,7 @@ class OAIPMHHarvester(HarvesterBase):
             harvest_objs.append(harvest_obj.id)
         self._clear_retries()
         log.info('Gathered %i records/sets from %s.' % (len(harvest_objs), domain))
-
         return harvest_objs
-
     def gather_stage(self, harvest_job):
         '''
         The gather stage will recieve a HarvestJob object and will be
@@ -404,7 +369,6 @@ class OAIPMHHarvester(HarvesterBase):
             - creating and storing any suitable HarvestGatherErrors that may
               occur.
             - returning a list with all the ids of the created HarvestObjects.
-
         :param harvest_job: HarvestJob object
         :returns: A list of HarvestObject ids
         '''
@@ -425,14 +389,10 @@ class OAIPMHHarvester(HarvesterBase):
                 self._clear_retries()
         except Exception as e:
             log.error(traceback.format_exc(e))
-
         model.repo.commit()
-
         if result is None:
             raise GatherFailure(ids=retry_ids)
-
         return result
-
     def fetch_stage(self, harvest_object):
         '''
         The fetch stage will receive a HarvestObject object and will be
@@ -443,14 +403,12 @@ class OAIPMHHarvester(HarvesterBase):
             - creating and storing any suitable HarvestObjectErrors that may
               occur.
             - returning True if everything went as expected, False otherwise.
-
         :param harvest_object: HarvestObject object
         :returns: True if everything went right, False if errors were found
         '''
         # I needed to store things that don't pickle so import has to do all
         # the work. Well, this avoids saving intermediate info in the DB.
         return True
-
     def import_stage(self, harvest_object):
         '''
         The import stage will receive a HarvestObject object and will be
@@ -464,20 +422,26 @@ class OAIPMHHarvester(HarvesterBase):
             - creating and storing any suitable HarvestObjectErrors that may
               occur.
             - returning True if everything went as expected, False otherwise.
-
         :param harvest_object: HarvestObject object
         :returns: True if everything went right, False if errors were found
         '''
         # Do common tasks and then call different methods depending on what
         # kind of info the harvest object contains.
+        self._set_config(harvest_object.job.source.config)
         ident = json.loads(harvest_object.content)
+        
         registry = MetadataRegistry()
-        registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader)
+        if 'metadata_formats' in self.config: 
+            for mdp in self.config['metadata_formats']: 
+                registry.registerReader(mdp, kata_oai_dc_reader) 
+            if self.metadata_prefix_value not in self.config['metadata_formats']: 
+                registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader) 
+        else: registry.registerReader(self.metadata_prefix_value, kata_oai_dc_reader)
+
         client = oaipmh.client.Client(harvest_object.job.source.url, registry)
         client.updateGranularity() #quickfix for granularity
         domain = ident['domain']
         group = Group.get(domain)  # Checked in gather_stage so exists.
-
         try:
             if ident['fetch_type'] == 'record':
                 return self._fetch_import_record(harvest_object, ident, client, group)
@@ -490,101 +454,119 @@ class OAIPMHHarvester(HarvesterBase):
             # Also very rare exceptions we haven't seen yet.
             self._add_retry(harvest_object)
             log.debug(traceback.format_exc(e))
-
         return False
-
     def _package_name_from_identifier(self, identifier):
         #quickfix for '/' char in identifier
         esc_identifier = identifier.replace('/','-')
         return urllib.quote_plus(esc_identifier)
-
     def _fetch_import_record(self, harvest_object, master_data, client, group):
         # The fetch part.
-        try:
-            header, metadata, _ = client.getRecord(metadataPrefix=self.metadata_prefix_value,
-                                                   identifier=master_data['record'])
-        except XMLSyntaxError:
-            self._add_retry(harvest_object)
-            log.error('oai_dc XML syntax error: %s' % master_data['record'])
-            self._save_object_error('Syntax error.', harvest_object, stage='Fetch')
-            return False
-        except socket.error:
-            self._add_retry(harvest_object)
-            errno, errstr = sys.exc_info()[:2]
-            self._save_object_error('Socket error OAI-PMH %s, details:\n%s' % (errno, errstr),
-                                    harvest_object,
-                                    stage='Fetch')
-            return False
-        except urllib2.URLError:
-            self._add_retry(harvest_object)
-            self._save_object_error('Failed to fetch record.', harvest_object, stage='Fetch')
-            return False
-        except httplib.BadStatusLine:
-            self._add_retry(harvest_object)
-            self._save_object_error('Bad HTTP response status line.', harvest_object, stage='Fetch')
-            return False
-
-        if not metadata:
-            # Assume that there is no metadata and not an error.
-            # Should this be a cause for retry?
-            log.warning('No metadata: %s' % master_data['record'])
-            return False
-
-        # if 'date' not in metadata.getMap() or not metadata.getMap()['date']:
-        #     self._add_retry(harvest_object)
-        #     self._save_object_error('Missing date: %s' % master_data['record'], harvest_object, stage='Fetch')
-        #     return False
-
-        master_data['record'] = (header.identifier(), metadata.getMap())
-        # Do not save to database (because we can't json nor pickle _Element).
-
-        # The import stage.
-        # Gather all relevant information into a dictionary.
-        data = {
-            'identifier': master_data['record'][0],
-            'metadata': master_data['record'][1]
-        }
+        metadataPrefixes = []
+        if('metadata_formats' in self.config):
+            metadataPrefixes = self.config['metadata_formats']
+        if self.metadata_prefix_value not in metadataPrefixes:
+            metadataPrefixes.append(self.metadata_prefix_value)
+        data = {'metadata': {}, 'package_xml_save' : {}, 'package_resource' : {}}
+        data['identifier'] = master_data['record']
         data['package_name'] = self._package_name_from_identifier(data['identifier'])
         data['package_url'] = '%s?verb=GetRecord&identifier=%s&%s=%s' % (
-            harvest_object.job.source.url,
-            data['identifier'],
-            self.metadata_prefix_key,
-            self.metadata_prefix_value
+                    harvest_object.job.source.url,
+                    data['identifier'],
+                    self.metadata_prefix_key,
+                    self.metadata_prefix_value
         )
+         
+        for mdp in metadataPrefixes:
+            try:
+                header, metadata, _ = client.getRecord(metadataPrefix=mdp,
+                                                       identifier=master_data['record'])
+            except XMLSyntaxError:
+                self._add_retry(harvest_object)
+                log.error('XML syntax error: %s' % master_data['record'])
+                self._save_object_error('Syntax error.', harvest_object, stage='Fetch')
+                if (mdp == self.metadata_prefix_value):
+                    return False
+                else: continue
+            except socket.error:
+                self._add_retry(harvest_object)
+                errno, errstr = sys.exc_info()[:2]
+                self._save_object_error('Socket error OAI-PMH %s, details:\n%s' % (errno, errstr),
+                                        harvest_object,
+                                        stage='Fetch')
+                if (mdp == self.metadata_prefix_value):
+                    return False
+                else: continue
+            except urllib2.URLError:
+                self._add_retry(harvest_object)
+                self._save_object_error('Failed to fetch record.', harvest_object, stage='Fetch')
+                if (mdp == self.metadata_prefix_value):
+                    return False
+                else: continue
+            except httplib.BadStatusLine:
+                self._add_retry(harvest_object)
+                self._save_object_error('Bad HTTP response status line.', harvest_object, stage='Fetch')
+                if (mdp == self.metadata_prefix_value):
+                    return False
+                else: continue
+            if not metadata:
+                # Assume that there is no metadata and not an error.
+                # Should this be a cause for retry?
+                log.warning('No metadata: %s' % master_data['record'])
+                #return False
+            # if 'date' not in metadata.getMap() or not metadata.getMap()['date']:
+            #     self._add_retry(harvest_object)
+            #     self._save_object_error('Missing date: %s' % master_data['record'], harvest_object, stage='Fetch')
+            #     return False
+            #master_data['record'] = (header.identifier(), metadata.getMap())
+            # Do not save to database (because we can't json nor pickle _Element).
+            # The import stage.
+            # Gather all relevant information into a dictionary.
+            
+            data['metadata'][mdp] = metadata.getMap()
+            
+            try:
+                nowstr = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
+                #fix for identifiers containing '/' char
+                esc_identifier = data['identifier'].replace('/','-');
+                label = '%s/%s-%s.xml' % (nowstr, esc_identifier,mdp)
+                resource_url = '%s?verb=GetRecord&identifier=%s&%s=%s' % (
+                    harvest_object.job.source.url,
+                    data['identifier'],
+                    self.metadata_prefix_key,
+                    mdp
+                )
 
-        try:
-            nowstr = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
-            #fix for identifiers containing '/' char
-            esc_identifier = data['identifier'].replace('/','-');
-            label = '%s/%s.xml' % (nowstr, esc_identifier)
-            f = urllib2.urlopen(data['package_url'])
-            x = f.read()
-            fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) #quick fix for ckan in non-root url 
-            data['package_xml_save'] = {
-                'label': label,
-                'xml': x
-            }
-            data['package_resource'] = {
-                'url': fileurl,
-                'description': 'Original metadata record',
-                'format': 'xml',
-                'size': len(x)
-            }
-        except (urllib2.HTTPError, urllib2.URLError):
-            self._add_retry(harvest_object)
-            self._save_object_error('Could not get original metadata record!',
-                                    harvest_object, stage='Import')
-            return False
-        except socket.error:
-            self._add_retry(harvest_object)
-            errno, errstr = sys.exc_info()[:2]
-            self._save_object_error(
-                'Socket error original metadata record %s, details:\n%s' % (errno, errstr),
-                harvest_object, stage='Import')
-            return False
-
+                f = urllib2.urlopen(resource_url)
+                x = f.read()
+                fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) #quick fix for ckan in non-root url 
+                data['package_xml_save'][mdp] = {
+                    'label': label,
+                    'xml': x
+                }
+                data['package_resource'][mdp] = {
+                    'url': fileurl,
+                    'description': 'Original ' + mdp + ' metadata record',
+                    'format': 'xml',
+                    'size': len(x)
+                }
+            except (urllib2.HTTPError, urllib2.URLError):
+                self._add_retry(harvest_object)
+                self._save_object_error('Could not get original metadata record!',
+                                        harvest_object, stage='Import')
+                if (mdp == self.metadata_prefix_value):
+                    return False
+                else: continue
+            except socket.error:
+                self._add_retry(harvest_object)
+                errno, errstr = sys.exc_info()[:2]
+                self._save_object_error(
+                    'Socket error original metadata record %s, details:\n%s' % (errno, errstr),
+                    harvest_object, stage='Import')
+                if (mdp == self.metadata_prefix_value):
+                    return False
+                else: continue
+            
         return oai_dc2ckan(data, kata_oai_dc_reader._namespaces, group, harvest_object)
-
     def _fetch_import_set(self, harvest_object, master_data, client, group):
         # Could be genuine fetch or retry of set insertions.
         if 'set' in master_data:
@@ -599,7 +581,7 @@ class OAIPMHHarvester(HarvesterBase):
                 for identity in client.listIdentifiers(**args):
                     ids.append(identity.identifier())
             except NoRecordsMatchError:
-                return False  # Ok, empty set. Nothing to do.
+                pass  # Ok, empty set. Nothing to do.
             except socket.error:
                 self._add_retry(harvest_object)
                 errno, errstr = sys.exc_info()[:2]
@@ -614,7 +596,6 @@ class OAIPMHHarvester(HarvesterBase):
         else:
             log.debug('Reinsert: %s %i' % (master_data['set_name'], len(master_data['record_ids'])))
         # Do not save to DB because we can't.
-
         # Import stage.
         model.repo.new_revision()
         subg_name = '%s - %s' % (group.name, master_data['set_name'])
@@ -640,7 +621,6 @@ class OAIPMHHarvester(HarvesterBase):
                 missed.append(ident)
                 if 'set' not in master_data:
                     log.debug('Omitted %s from %s' % (pkg_name, subg_name))
-
         if len(missed):
             # Store missing names for retry.
             master_data['record_ids'] = missed
@@ -651,54 +631,5 @@ class OAIPMHHarvester(HarvesterBase):
             log.debug('Missed %s %i' % (master_data['set_name'], len(missed)))
         else:
             harvest_object.content = None  # Clear data.
-
         model.repo.commit()
-
         return True
-
-    def import_xml(self, source, xml):
-        # Try to get client identifier so group can be found.
-        client, identifier = self._get_client_identifier(source.url if source else '')
-        group = None
-        if identifier:
-            domain = identifier.repositoryName()
-            group = self._get_group(domain, False)
-
-        # Convert XML to data.
-        try:
-            tree = client.parse(xml)
-        except SyntaxError:
-            log.error('oai_dc XML import syntax error.')
-            return False
-
-        records, token = client.buildRecords(
-            self.metadata_prefix_value,
-            client.getNamespaces(),
-            client.getMetadataRegistry(),
-            tree
-        )
-        data = {
-            'identifier': records[0][0].identifier(),
-            'metadata': records[0][1].getMap(),
-            'package_url': None
-        }
-        data['package_name'] = self._package_name_from_identifier(data['identifier'])
-
-        # Data to use when saving the XML record.
-        nowstr = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')
-        # fix for identifiers containing '/' char
-        esc_identifier = data['identifier'].replace('/','-')
-        label = '%s/%s.xml' % (nowstr, esc_identifier)
-        fileurl = pylons.configuration.config['ckan.site_url'] + pylons.configuration.config['ckan.api_url'] + h.url_for('storage_file', label=label) # quickfix for ckan in non-root url
-        data['package_xml_save'] = {
-            'label': label,
-            'xml': xml
-        }
-        data['package_resource'] = {
-            'url': fileurl,
-            'description': 'Original metadata record',
-            'format': 'xml',
-            'size': len(xml)
-        }
-
-        return oai_dc2ckan(data, kata_oai_dc_reader._namespaces, group)
